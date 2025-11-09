@@ -21,3 +21,13 @@ proxy/logs/*
 
 # VS Code
 .vscode/
+
+# Chrome extension build/cache
+extension/_metadata/
+extension/generated_*/
+extension/**/*_ruleset*
+extension/**/*.bin
+extension/*.crx
+extension/*.zip
+extension/*.pem
+
