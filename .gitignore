@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Logs & local artifacts
+proxy/logs/*
+!proxy/logs/.gitkeep
+*.log
+*.jsonl
+
+# Local config
+.env
+
+# VS Code
+.vscode/

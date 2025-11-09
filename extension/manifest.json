@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "PrivPrompt Redirect",
+  "version": "0.1",
+  "description": "Routes AI calls to a local privacy proxy",
+  "permissions": ["declarativeNetRequest", "storage", "browsingData"],
+  "host_permissions": ["https://api.openai.com/*", "http://localhost/*"],
+  "background": { "service_worker": "service_worker.js" },
+  "declarative_net_request": {
+    "rule_resources": [{
+      "id": "rules",
+      "enabled": true,
+      "path": "rules.json"
+    }]
+  },
+  "action": { "default_popup": "popup.html" }
+}
