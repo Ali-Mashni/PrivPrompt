@@ -32,11 +32,14 @@ project layout
 ```bash
 privprompt/
   extension/              # Browser extension (MV3)
+    icons/
     manifest.json
     rules.json
     popup.html
     popup.js
     service_worker.js
+    injected.js
+    toast.css
   proxy/                  # Local proxy (FastAPI)
     app.py
     logs/                 # JSONL logs will appear here
