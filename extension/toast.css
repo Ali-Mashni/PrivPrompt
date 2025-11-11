@@ -1,0 +1,9 @@
+#ppf-toast {
+  position: fixed; right: 16px; bottom: 16px; z-index: 2147483647;
+  max-width: 380px; padding: 10px 12px; border-radius: 8px;
+  background: rgba(20,20,20,0.9); color: #fff; font: 13px/1.4 sans-serif;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.25); pointer-events: none;
+  opacity: 0; transform: translateY(12px); transition: all .25s ease;
+}
+#ppf-toast.ppf-show { opacity: 1; transform: translateY(0); }
+#ppf-toast strong { font-weight: 600; }

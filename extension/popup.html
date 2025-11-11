@@ -1,11 +1,21 @@
 <!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>PrivPrompt</title></head>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { font: 13px system-ui, sans-serif; margin: 12px; min-width: 220px; }
+      select { width: 100%; padding: 6px; }
+      #status { margin-top: 8px; color: #555; }
+    </style>
+  </head>
   <body>
-    <label>
-      <input type="checkbox" id="toggle"> Private AI Session
-    </label>
-    <div id="status"></div>
+    <label for="mode"><b>PrivPrompt mode</b></label>
+    <select id="mode">
+      <option value="warn">Warn (default)</option>
+      <option value="strict">Strict (block non-text)</option>
+      <option value="block">Block all outbound</option>
+    </select>
+    <div id="status">Loading…</div>
     <script src="popup.js"></script>
   </body>
 </html>

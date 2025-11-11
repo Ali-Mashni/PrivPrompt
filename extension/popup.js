@@ -1,25 +1,18 @@
-const toggle = document.getElementById('toggle');
-const statusEl = document.getElementById('status');
+const sel = document.getElementById("mode");
+const statusEl = document.getElementById("status");
 
-chrome.storage.session.get("pp_private", ({ pp_private }) => {
-  toggle.checked = Boolean(pp_private);
-  statusEl.textContent = toggle.checked ? "Active" : "Off";
+const setStatus = (t) => statusEl.textContent = t;
+
+chrome.storage.local.get(["ppf_mode"], ({ ppf_mode }) => {
+  sel.value = ppf_mode || "warn";
+  setStatus(`Current mode: ${sel.value}`);
 });
 
-toggle.addEventListener('change', async () => {
-  const active = toggle.checked;
-  chrome.storage.session.set({ pp_private: active });
-  statusEl.textContent = active ? "Active" : "Off";
-
-  // Clear cookies/storage for AI domain on start and end
-  try {
-    await chrome.browsingData.remove({origins:["https://api.openai.com"]}, {
-      cookies: true, localStorage: true, indexedDB: true, cacheStorage: true
+sel.addEventListener("change", () => {
+  const mode = sel.value;
+  chrome.storage.local.set({ ppf_mode: mode }, () => {
+    chrome.runtime.sendMessage({ type: "PPF_SET_MODE", mode }, (res) => {
+      setStatus(res?.ok ? `Current mode: ${mode}` : "Failed to set mode");
     });
-  } catch(e) {}
-
-  // Tell the proxy to rotate session salt
-  try {
-    await fetch("http://localhost:8787/session/start", { method: "POST" });
-  } catch(e) {}
+  });
 });

@@ -1,25 +1,3 @@
 [
-  {
-    "id": 1,
-    "priority": 1,
-    "action": {
-      "type": "redirect",
-      "redirect": {
-        "url": "http://localhost:8787/relay/openai/v1/chat/completions"
-      }
-    },
-    "condition": {
-      "urlFilter": "||api.openai.com/v1/chat/completions",
-      "resourceTypes": ["xmlhttprequest"]
-    }
-  },
-  {
-    "id": 1001,
-    "priority": 1,
-    "action": {
-      "type": "modifyHeaders",
-      "requestHeaders": [{ "header": "referer", "operation": "remove" }]
-    },
-    "condition": { "urlFilter": "||api.openai.com/*", "resourceTypes": ["xmlhttprequest"] }
-  }
+
 ]
