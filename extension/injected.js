@@ -42,6 +42,22 @@
     const t = s.trim();
     return (t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"));
   }
+  // --- per-send correlation (reuse within a short window) ---
+  const _ppfSend = { lastId: null, lastAt: 0 };
+  function newSendId() { return Math.random().toString(36).slice(2); }
+
+  function sendIdFor(url) {
+    // We don't really need the URL to key; ChatGPT fires the twin POSTs within ~500ms
+    const now = Date.now();
+    if (now - _ppfSend.lastAt < 600) { // reuse if within 600ms
+      _ppfSend.lastAt = now;
+      return _ppfSend.lastId || (_ppfSend.lastId = newSendId());
+    }
+    _ppfSend.lastAt = now;
+    _ppfSend.lastId = newSendId();
+    return _ppfSend.lastId;
+  }
+
 
   function askProxy(payload) {
     return new Promise((resolve) => {
@@ -59,9 +75,11 @@
   }
 
   // Logged-in & logged-out conversation endpoints
-  function shouldInspectUrl(url) {
-    return /https:\/\/chatgpt\.com\/(backend-api|backend-anon)\/(?:f\/)?conversation\b/.test(url);
+  function shouldInspect(url, method = "GET") {
+  if (String(method).toUpperCase() !== "POST") return false;
+  return /^https:\/\/chatgpt\.com\/(backend-api|backend-anon)\/(?:f\/)?conversation(?:\?.*)?$/.test(url);
   }
+
 
   // ========== FETCH PATCH (re-patchable) ==========
   (function patchFetch() {
@@ -78,7 +96,7 @@
         "GET"
       ).toUpperCase();
 
-      if (!shouldInspectUrl(url)) return _fetch.call(this, input, init);
+      if (!shouldInspect(url, method)) return _fetch.call(this, input, init);
 
       let bodyText = null, bodyKind = "none";
       let headersFromReq = null;
@@ -97,7 +115,16 @@
         }
       } catch {}
 
-      const decision = await askProxy({ context: "fetch", url, method, bodyKind, body: bodyText }).catch(() => ({ action: "allow" }));
+      const sendId = sendIdFor(url);
+      const decision = await askProxy({
+        context: "fetch",
+        url,
+        method,
+        bodyKind,
+        body: bodyText,
+        sendId
+        }).catch(() => ({ action: "allow" }));
+
 
       if (decision?.notify?.message) toast(decision.notify.message);
       if (decision?.action === "block") { toast("PrivPrompt: blocked request"); throw new Error("PrivPrompt blocked request"); }
@@ -155,7 +182,7 @@
 
     XMLHttpRequest.prototype.send = async function (body) {
       const info = this.__ppf || { method: "GET", url: "" };
-      if (!shouldInspectUrl(info.url)) return _send.call(this, body);
+      if (!shouldInspect(info.url, info.method)) return _send.call(this, body);
 
       let bodyKind = "none", bodyText = null;
       if (typeof body === "string") { bodyText = body; bodyKind = looksJson(body) ? "json" : "text"; }
@@ -175,22 +202,28 @@
   })();
 
   // ========== sendBeacon PATCH (optional) ==========
-  (function patchBeacon() {
-    const orig = navigator.sendBeacon?.bind(navigator);
-    if (!orig || navigator.sendBeacon.__ppfWrapped) return;
-    function wrapped(url, data) {
-      const u = String(url || "");
-      if (!shouldInspectUrl(u)) return orig(url, data);
-      let bodyKind = "none", bodyText = null;
-      if (typeof data === "string") { bodyText = data; bodyKind = looksJson(data) ? "json" : "text"; }
-      else if (data instanceof Blob) bodyKind = "binary";
-      else if (data instanceof FormData) bodyKind = "multipart";
-      askProxy({ context: "beacon", url: u, method: "POST", bodyKind, body: bodyText })
-        .then(decision => { if (decision?.notify?.message) toast(decision.notify.message); })
-        .catch(()=>{});
-      return orig(url, data);
-    }
-    wrapped.__ppfWrapped = true;
-    navigator.sendBeacon = wrapped;
-  })();
+  // ========== sendBeacon PATCH (optional) ==========
+(function patchBeacon() {
+  const orig = navigator.sendBeacon?.bind(navigator);
+  if (!orig || navigator.sendBeacon.__ppfWrapped) return;
+
+  function wrapped(url, data) {
+    const u = String(url || "");
+    // sendBeacon => POST
+    if (!shouldInspect(u, "POST")) return orig(url, data);
+
+    let bodyKind = "none", bodyText = null;
+    if (typeof data === "string") { bodyText = data; bodyKind = looksJson(data) ? "json" : "text"; }
+    else if (data instanceof Blob) bodyKind = "binary";
+    else if (data instanceof FormData) bodyKind = "multipart";
+
+    askProxy({ context: "beacon", url: u, method: "POST", bodyKind, body: bodyText })
+      .then(decision => { if (decision?.notify?.message) toast(decision.notify.message); })
+      .catch(() => {});
+    return orig(url, data);
+  }
+
+  wrapped.__ppfWrapped = true;
+  navigator.sendBeacon = wrapped;
+})();
 })();
