@@ -1,56 +1,42 @@
-// extension/injected.js
 (function () {
-  // (Optional) mark main-world load without logging
-  try { document.documentElement.setAttribute("data-ppf-injected", "1"); } catch {}
-
-  // -- UI toast -----------------------------------------------------
-  function toast(msg) {
-  let el = document.getElementById("ppf-toast");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "ppf-toast";
-    el.style.cssText = [
-      "position:fixed",
-      "right:20px",
-      "bottom:20px",
-      "z-index:2147483647",
-      "max-width:460px",
-      "padding:14px 16px",
-      "border-radius:10px",
-      "background:rgba(20,20,20,.92)",
-      "color:#fff",
-      "font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif",
-      "box-shadow:0 10px 28px rgba(0,0,0,.35)",
-      "pointer-events:none",
-      "opacity:0",
-      "transform:translateY(14px) scale(0.98)",
-      "transition:opacity .25s ease, transform .25s ease",
-      "border:1px solid rgba(255,255,255,.08)"
-    ].join(";");
-    document.body.appendChild(el);
+  // ------------- toast (waits for body) -------------
+  function ensureBody(cb) {
+    if (document.body) return cb();
+    const i = setInterval(() => {
+      if (document.body) { clearInterval(i); cb(); }
+    }, 10);
   }
 
-  el.textContent = msg;
+  function toast(msg) {
+    ensureBody(() => {
+      let el = document.getElementById("ppf-toast");
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "ppf-toast";
+        el.style.cssText = [
+          "position:fixed","right:20px","bottom:20px","z-index:2147483647",
+          "max-width:520px","padding:16px 18px","border-radius:12px",
+          "background:rgba(20,20,20,.94)","color:#fff",
+          "font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif",
+          "box-shadow:0 14px 36px rgba(0,0,0,.38)","pointer-events:none",
+          "opacity:0","transform:translateY(16px) scale(.98)",
+          "transition:opacity .28s ease, transform .28s ease",
+          "border:1px solid rgba(255,255,255,.08)"
+        ].join(";");
+        document.body.appendChild(el);
+      }
+      el.textContent = msg;
+      el.style.opacity = "1";
+      el.style.transform = "translateY(0) scale(1)";
+      clearTimeout(el._t);
+      el._t = setTimeout(() => {
+        el.style.opacity = "0";
+        el.style.transform = "translateY(16px) scale(.98)";
+      }, 5500);
+    });
+  }
 
-  // show
-  el.style.opacity = "1";
-  el.style.transform = "translateY(0) scale(1)";
-
-  // stays for (4.5s)
-  const HOLD_MS = 4500;
-
-  // clear any previous hide timer
-  clearTimeout(el._t);
-
-  el._t = setTimeout(() => {
-    // hide
-    el.style.opacity = "0";
-    el.style.transform = "translateY(14px) scale(0.98)";
-  }, HOLD_MS);
-}
-
-
-  // -- helpers ----------------------------------------------------------------
+  // ------------- helpers -------------
   function looksJson(s) {
     if (typeof s !== "string") return false;
     const t = s.trim();
@@ -68,119 +54,143 @@
       }
       window.addEventListener("message", onReply);
       window.postMessage({ __ppf: "FROM_PAGE", id, payload }, "*");
-      // fail-open if no decision comes back quickly
-      setTimeout(() => {
-        window.removeEventListener("message", onReply);
-        resolve({ action: "allow" });
-      }, 1500);
+      setTimeout(() => { window.removeEventListener("message", onReply); resolve({ action: "allow" }); }, 1500);
     });
   }
 
-  // Only inspect actual message POSTs to ChatGPT (anonymous; extend if needed)
+  // Logged-in & logged-out conversation endpoints
   function shouldInspectUrl(url) {
-    return /https:\/\/chatgpt\.com\/backend-anon\/f\/conversation\b/.test(url);
+    return /https:\/\/chatgpt\.com\/(backend-api|backend-anon)\/(?:f\/)?conversation\b/.test(url);
   }
 
-  // -- patch fetch -------------------------------------------------------------
-  const _fetch = window.fetch;
-  window.fetch = async function (input, init = {}) {
-    const isReq = (typeof Request !== "undefined") && (input instanceof Request);
-    const url = isReq ? input.url : (typeof input === "string" ? input : (input && input.url) || "");
-    const method = (
-      init?.method ||
-      (isReq ? input.method : (typeof input !== "string" && input?.method)) ||
-      "GET"
-    ).toUpperCase();
+  // ========== FETCH PATCH (re-patchable) ==========
+  (function patchFetch() {
+    if (!window.fetch) return;
+    if (window.fetch.__ppfWrapped) return;  // don’t double-wrap
+    const _fetch = window.fetch;
 
-    // Only touch the requests we care about
-    if (!shouldInspectUrl(url)) {
+    async function wrappedFetch(input, init = {}) {
+      const isReq = (typeof Request !== "undefined") && (input instanceof Request);
+      const url = isReq ? input.url : (typeof input === "string" ? input : (input && input.url) || "");
+      const method = (
+        init?.method ||
+        (isReq ? input.method : (typeof input !== "string" && input?.method)) ||
+        "GET"
+      ).toUpperCase();
+
+      if (!shouldInspectUrl(url)) return _fetch.call(this, input, init);
+
+      let bodyText = null, bodyKind = "none";
+      let headersFromReq = null;
+      try {
+        if (isReq) {
+          headersFromReq = new Headers(input.headers);
+          if (!input.bodyUsed && method !== "GET" && method !== "HEAD") {
+            try { bodyText = await input.clone().text(); bodyKind = looksJson(bodyText) ? "json" : "text"; }
+            catch { bodyKind = "unknown"; }
+          }
+        } else if (init && "body" in init && init.body != null) {
+          if (typeof init.body === "string") { bodyText = init.body; bodyKind = looksJson(bodyText) ? "json" : "text"; }
+          else if (init.body instanceof FormData) bodyKind = "multipart";
+          else if (init.body instanceof Blob) bodyKind = "binary";
+          else { try { bodyText = init.body.toString(); bodyKind = "text"; } catch { bodyKind = "unknown"; } }
+        }
+      } catch {}
+
+      const decision = await askProxy({ context: "fetch", url, method, bodyKind, body: bodyText }).catch(() => ({ action: "allow" }));
+
+      if (decision?.notify?.message) toast(decision.notify.message);
+      if (decision?.action === "block") { toast("PrivPrompt: blocked request"); throw new Error("PrivPrompt blocked request"); }
+
+      if (decision?.action === "modify" && typeof decision.body === "string") {
+        toast("PrivPrompt: sanitized request");
+        if (isReq) {
+          const opts = {
+            method,
+            headers: headersFromReq ? new Headers(headersFromReq) : undefined,
+            body: decision.body,
+            mode: input.mode, credentials: input.credentials, cache: input.cache,
+            redirect: input.redirect, referrer: input.referrer, referrerPolicy: input.referrerPolicy,
+            integrity: input.integrity, keepalive: input.keepalive
+          };
+          if (opts.headers && !opts.headers.has("content-type") && looksJson(decision.body)) {
+            opts.headers.set("content-type", "application/json");
+          }
+          const newReq = new Request(url, opts);
+          return _fetch.call(this, newReq);
+        } else {
+          init = init || {};
+          init.body = decision.body;
+          if (!init.headers) init.headers = {};
+          if (looksJson(decision.body)) {
+            if (init.headers instanceof Headers) {
+              if (!init.headers.has("content-type")) init.headers.set("content-type", "application/json");
+            } else if (typeof init.headers === "object" && !("content-type" in init.headers)) {
+              init.headers["content-type"] = "application/json";
+            }
+          }
+          return _fetch.call(this, input, init);
+        }
+      }
+
       return _fetch.call(this, input, init);
     }
 
-    // Try to read request body (non-destructively)
-    let bodyText = null, bodyKind = "none";
-    let headersFromReq = null;
-    try {
-      if (isReq) {
-        headersFromReq = new Headers(input.headers);
-        if (!input.bodyUsed && method !== "GET" && method !== "HEAD") {
-          try {
-            bodyText = await input.clone().text();
-            bodyKind = looksJson(bodyText) ? "json" : "text";
-          } catch { bodyKind = "unknown"; }
-        }
-      } else if (init && "body" in init && init.body != null) {
-        if (typeof init.body === "string") {
-          bodyText = init.body;
-          bodyKind = looksJson(bodyText) ? "json" : "text";
-        } else if (init.body instanceof FormData) {
-          bodyKind = "multipart";
-        } else if (init.body instanceof Blob) {
-          bodyKind = "binary";
-        } else {
-          try { bodyText = init.body.toString(); bodyKind = "text"; }
-          catch { bodyKind = "unknown"; }
-        }
-      }
-    } catch {
-      // fail-open on read errors
+    wrappedFetch.__ppfWrapped = true;
+    window.fetch = wrappedFetch;
+  })();
+
+  // ========== XHR PATCH (re-patchable) ==========
+  (function patchXHR() {
+    if (!window.XMLHttpRequest) return;
+    if (XMLHttpRequest.prototype.__ppfWrapped) return;
+
+    const _open = XMLHttpRequest.prototype.open;
+    const _send = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+      this.__ppf = { method: String(method || "GET").toUpperCase(), url: String(url || "") };
+      return _open.call(this, method, url, ...rest);
+    };
+
+    XMLHttpRequest.prototype.send = async function (body) {
+      const info = this.__ppf || { method: "GET", url: "" };
+      if (!shouldInspectUrl(info.url)) return _send.call(this, body);
+
+      let bodyKind = "none", bodyText = null;
+      if (typeof body === "string") { bodyText = body; bodyKind = looksJson(body) ? "json" : "text"; }
+      else if (body instanceof FormData) bodyKind = "multipart";
+      else if (body instanceof Blob) bodyKind = "binary";
+
+      const decision = await askProxy({ context: "xhr", url: info.url, method: info.method, bodyKind, body: bodyText }).catch(() => ({ action: "allow" }));
+
+      if (decision?.notify?.message) toast(decision.notify.message);
+      if (decision?.action === "block") { toast("PrivPrompt: blocked request"); try { this.abort(); } catch {} return; }
+      if (decision?.action === "modify" && typeof decision.body === "string") { body = decision.body; toast("PrivPrompt: sanitized request"); }
+
+      return _send.call(this, body);
+    };
+
+    XMLHttpRequest.prototype.__ppfWrapped = true;
+  })();
+
+  // ========== sendBeacon PATCH (optional) ==========
+  (function patchBeacon() {
+    const orig = navigator.sendBeacon?.bind(navigator);
+    if (!orig || navigator.sendBeacon.__ppfWrapped) return;
+    function wrapped(url, data) {
+      const u = String(url || "");
+      if (!shouldInspectUrl(u)) return orig(url, data);
+      let bodyKind = "none", bodyText = null;
+      if (typeof data === "string") { bodyText = data; bodyKind = looksJson(data) ? "json" : "text"; }
+      else if (data instanceof Blob) bodyKind = "binary";
+      else if (data instanceof FormData) bodyKind = "multipart";
+      askProxy({ context: "beacon", url: u, method: "POST", bodyKind, body: bodyText })
+        .then(decision => { if (decision?.notify?.message) toast(decision.notify.message); })
+        .catch(()=>{});
+      return orig(url, data);
     }
-
-    // Ask the extension/proxy for a decision
-    let decision = { action: "allow" };
-    try {
-      decision = await askProxy({ context: "fetch", url, method, bodyKind, body: bodyText });
-    } catch { /* fail-open */ }
-
-    if (decision?.notify?.message) {
-      toast(decision.notify.message);
-    }
-
-    if (decision?.action === "block") {
-      toast("PrivPrompt: blocked request");
-      throw new Error("PrivPrompt blocked request");
-    }
-
-    if (decision?.action === "modify" && typeof decision.body === "string") {
-      toast("PrivPrompt: sanitized request");
-      // Rebuild the request with the sanitized body
-      if (isReq) {
-        const opts = {
-          method,
-          headers: headersFromReq ? new Headers(headersFromReq) : undefined,
-          body: decision.body,
-          mode: input.mode,
-          credentials: input.credentials,
-          cache: input.cache,
-          redirect: input.redirect,
-          referrer: input.referrer,
-          referrerPolicy: input.referrerPolicy,
-          integrity: input.integrity,
-          keepalive: input.keepalive
-        };
-        // Ensure content-type is present for JSON
-        if (decision.body && opts.headers && !opts.headers.has("content-type")) {
-          if (looksJson(decision.body)) opts.headers.set("content-type", "application/json");
-        }
-        const newReq = new Request(url, opts);
-        return _fetch.call(this, newReq);
-      } else {
-        init = init || {};
-        init.body = decision.body;
-        if (!init.headers) init.headers = {};
-        const isJson = looksJson(decision.body);
-        if (isJson) {
-          if (init.headers instanceof Headers) {
-            if (!init.headers.has("content-type")) init.headers.set("content-type", "application/json");
-          } else if (typeof init.headers === "object" && !("content-type" in init.headers)) {
-            init.headers["content-type"] = "application/json";
-          }
-        }
-        return _fetch.call(this, input, init);
-      }
-    }
-
-    // Default pass-through
-    return _fetch.call(this, input, init);
-  };
+    wrapped.__ppfWrapped = true;
+    navigator.sendBeacon = wrapped;
+  })();
 })();
