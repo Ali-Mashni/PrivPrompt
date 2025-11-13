@@ -118,15 +118,3 @@ Click Load unpacked and select the extension/ folder
 
 Pin the extension and open the popup to see the Private AI Session toggle
 
-## Quick Smoke Test
-
-Direct test using PowerShell (not related to the extention)
-
-```powershell
-$body = @{
-model = "dummy"
-messages = @(@{ role = "user"; content = "hello world" })
-} | ConvertTo-Json -Depth 5
-
-irm -Method Post -Uri "http://localhost:8787/relay/openai/v1/chat/completions" -ContentType 'application/json' -Body $body
-```
