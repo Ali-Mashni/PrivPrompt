@@ -77,7 +77,7 @@
   // Logged-in & logged-out conversation endpoints
   function shouldInspect(url, method = "GET") {
   if (String(method).toUpperCase() !== "POST") return false;
-  return /^https:\/\/chatgpt\.com\/(backend-api|backend-anon)\/(?:f\/)?conversation(?:\?.*)?$/.test(url);
+  return /^https:\/\/chatgpt\.com\/(backend-api|backend-anon)\/(?:f\/)?conversation(?:\/[a-z_]+)?(?:\?.*)?$/i.test(url);
   }
 
 
