@@ -1,12 +1,22 @@
 (function () {
-  // ------------- toast (waits for body) -------------
+  // ===== hard switch: drop ALL typing pings =====
+  const BLOCK_ALL_TYPING = true;
+  const TYPING_RE = /\/(backend-api|backend-anon)\/(?:f\/)?conversation\/prepare(?:\b|[/?#])/i;
+  // also silence type-ahead suggestions and CES telemetry
+  const BLOCK_TYPEAHEAD = true;  // /generate_autocompletions
+  const BLOCK_CES       = true;  // /ces/v1/t and /ces/v1/flush
+
+  const TYPEAHEAD_RE = /\/(backend-api|backend-anon)\/generate_auto?completions(?:\b|[\/?#])/i;
+  const CES_RE       = /^https:\/\/chatgpt\.com\/ces\/v1\/(?:t|flush)(?:\b|[/?#])/i;
+
+
+  // ------------- toast (kept for non-typing notices) -------------
   function ensureBody(cb) {
     if (document.body) return cb();
     const i = setInterval(() => {
       if (document.body) { clearInterval(i); cb(); }
     }, 10);
   }
-
   function toast(msg) {
     ensureBody(() => {
       let el = document.getElementById("ppf-toast");
@@ -35,6 +45,7 @@
       }, 5500);
     });
   }
+  
 
   // ------------- helpers -------------
   function looksJson(s) {
@@ -42,23 +53,71 @@
     const t = s.trim();
     return (t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"));
   }
-  // --- per-send correlation (reuse within a short window) ---
-  const _ppfSend = { lastId: null, lastAt: 0 };
-  function newSendId() { return Math.random().toString(36).slice(2); }
 
-  function sendIdFor(url) {
-    // We don't really need the URL to key; ChatGPT fires the twin POSTs within ~500ms
-    const now = Date.now();
-    if (now - _ppfSend.lastAt < 600) { // reuse if within 600ms
-      _ppfSend.lastAt = now;
-      return _ppfSend.lastId || (_ppfSend.lastId = newSendId());
+  function stubJson(obj) {
+  return new Response(JSON.stringify(obj), {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      "x-privprompt-stub": "1"
     }
-    _ppfSend.lastAt = now;
-    _ppfSend.lastId = newSendId();
-    return _ppfSend.lastId;
+  });
+}
+
+
+// ---- sendId: stable per submission (body-derived, with timed fallback) ----
+const _ppfSend = { lastId: null, lastKey: "", lastAt: 0 };
+
+function djb2Hash(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h) ^ s.charCodeAt(i);
+  }
+  return (h >>> 0).toString(36); // unsigned, base36
+}
+
+function deriveSendId(url, method, bodyText) {
+  // Normalize key to the conversation path (ignore query)
+  const m = url.match(/\/(backend-api|backend-anon)\/(?:f\/)?conversation(?:\/\w+)?/i);
+  const key = (m && m[0]) || url;
+
+  // Try to derive from JSON body fields that are stable across twin calls
+  let base = null;
+  if (typeof bodyText === "string" && bodyText.trim().startsWith("{")) {
+    try {
+      const obj = JSON.parse(bodyText);
+      if (obj?.messages && Array.isArray(obj.messages) && obj.messages.length) {
+        base = obj.messages[0].id || obj.messages[0].message_id || null;
+      }
+      if (!base) base = obj.message_id || obj.id || obj.conversation_id || null;
+      if (!base && typeof obj.input === "string") base = obj.input.slice(0, 64);
+    } catch {
+      // ignore parse errors
+    }
   }
 
+  let id;
+  if (base) {
+    // Deterministic per submission
+    id = djb2Hash(String(base)).slice(0, 10);
+  } else {
+    // Fallback: reuse within 2s for same path (handles twin POSTs)
+    const now = Date.now();
+    if (_ppfSend.lastKey === key && now - _ppfSend.lastAt < 2000 && _ppfSend.lastId) {
+      _ppfSend.lastAt = now;
+      return _ppfSend.lastId;
+    }
+    id = djb2Hash(key + ":" + now + ":" + Math.random().toString(36).slice(2)).slice(0, 10);
+  }
 
+  _ppfSend.lastKey = key;
+  _ppfSend.lastId  = id;
+  _ppfSend.lastAt  = Date.now();
+  return id;
+}
+
+
+  // bridge to service worker (kept for final-submit path)
   function askProxy(payload) {
     return new Promise((resolve) => {
       const id = Math.random().toString(36).slice(2);
@@ -76,15 +135,14 @@
 
   // Logged-in & logged-out conversation endpoints
   function shouldInspect(url, method = "GET") {
-  if (String(method).toUpperCase() !== "POST") return false;
-  return /^https:\/\/chatgpt\.com\/(backend-api|backend-anon)\/(?:f\/)?conversation(?:\/[a-z_]+)?(?:\?.*)?$/i.test(url);
+    if (String(method).toUpperCase() !== "POST") return false;
+    return /^https:\/\/chatgpt\.com\/(backend-api|backend-anon)\/(?:f\/)?conversation(?:\/[a-z_]+)?(?:\?.*)?$/i.test(url);
   }
-
 
   // ========== FETCH PATCH (re-patchable) ==========
   (function patchFetch() {
     if (!window.fetch) return;
-    if (window.fetch.__ppfWrapped) return;  // don’t double-wrap
+    if (window.fetch.__ppfWrapped) return;
     const _fetch = window.fetch;
 
     async function wrappedFetch(input, init = {}) {
@@ -96,8 +154,16 @@
         "GET"
       ).toUpperCase();
 
+      // ===== HARD BLOCKS that shouldn't hit network or proxy =====
+      if (BLOCK_ALL_TYPING && TYPING_RE.test(url))   return stubJson({});
+      if (BLOCK_TYPEAHEAD && TYPEAHEAD_RE.test(url)) return stubJson({ suggestions: [] });
+      if (BLOCK_CES && CES_RE.test(url))             return stubJson({});
+
+      // only inspect conversation endpoints after hard blocks
       if (!shouldInspect(url, method)) return _fetch.call(this, input, init);
 
+
+      // normal path (final submit, etc.)
       let bodyText = null, bodyKind = "none";
       let headersFromReq = null;
       try {
@@ -115,7 +181,7 @@
         }
       } catch {}
 
-      const sendId = sendIdFor(url);
+      const sendId = deriveSendId(url, method, bodyText);
       const decision = await askProxy({
         context: "fetch",
         url,
@@ -123,7 +189,7 @@
         bodyKind,
         body: bodyText,
         sendId
-        }).catch(() => ({ action: "allow" }));
+      }).catch(() => ({ action: "allow" }));
 
 
       if (decision?.notify?.message) toast(decision.notify.message);
@@ -182,14 +248,37 @@
 
     XMLHttpRequest.prototype.send = async function (body) {
       const info = this.__ppf || { method: "GET", url: "" };
-      if (!shouldInspect(info.url, info.method)) return _send.call(this, body);
+
+      // ===== HARD BLOCKS on XHR too =====
+      if ((BLOCK_ALL_TYPING && TYPING_RE.test(info.url)) ||
+          (BLOCK_TYPEAHEAD && TYPEAHEAD_RE.test(info.url)) ||
+          (BLOCK_CES && CES_RE.test(info.url))) {
+        try { this.abort(); } catch {}
+        return; // silent drop
+      }
+
+
+      if (!/^https:\/\/chatgpt\.com\/(backend-api|backend-anon)\/(?:f\/)?conversation(?:\/[a-z_]+)?/i.test(info.url)
+          || info.method !== "POST") {
+        return _send.call(this, body);
+      }
 
       let bodyKind = "none", bodyText = null;
       if (typeof body === "string") { bodyText = body; bodyKind = looksJson(body) ? "json" : "text"; }
       else if (body instanceof FormData) bodyKind = "multipart";
       else if (body instanceof Blob) bodyKind = "binary";
+      const sendId = deriveSendId(info.url, info.method, bodyText);
 
-      const decision = await askProxy({ context: "xhr", url: info.url, method: info.method, bodyKind, body: bodyText }).catch(() => ({ action: "allow" }));
+
+      const decision = await askProxy({
+      context: "xhr",
+      url: info.url,
+      method: info.method,
+      bodyKind,
+      body: bodyText,
+      sendId
+      }).catch(() => ({ action: "allow" }));
+
 
       if (decision?.notify?.message) toast(decision.notify.message);
       if (decision?.action === "block") { toast("PrivPrompt: blocked request"); try { this.abort(); } catch {} return; }
@@ -202,28 +291,34 @@
   })();
 
   // ========== sendBeacon PATCH (optional) ==========
-  // ========== sendBeacon PATCH (optional) ==========
-(function patchBeacon() {
-  const orig = navigator.sendBeacon?.bind(navigator);
-  if (!orig || navigator.sendBeacon.__ppfWrapped) return;
+  (function patchBeacon() {
+    const orig = navigator.sendBeacon?.bind(navigator);
+    if (!orig || navigator.sendBeacon.__ppfWrapped) return;
 
-  function wrapped(url, data) {
-    const u = String(url || "");
-    // sendBeacon => POST
-    if (!shouldInspect(u, "POST")) return orig(url, data);
+    function wrapped(url, data) {
+      const u = String(url || "");
+      // ===== HARD BLOCK ALL TYPING PINGS (sendBeacon path) =====
+      if ((BLOCK_ALL_TYPING && TYPING_RE.test(u)) ||
+          (BLOCK_CES && CES_RE.test(u))) {
+        return true; // pretend success, send nothing
+      }
 
-    let bodyKind = "none", bodyText = null;
-    if (typeof data === "string") { bodyText = data; bodyKind = looksJson(data) ? "json" : "text"; }
-    else if (data instanceof Blob) bodyKind = "binary";
-    else if (data instanceof FormData) bodyKind = "multipart";
 
-    askProxy({ context: "beacon", url: u, method: "POST", bodyKind, body: bodyText })
-      .then(decision => { if (decision?.notify?.message) toast(decision.notify.message); })
-      .catch(() => {});
-    return orig(url, data);
-  }
+      // only consider conversation endpoints; otherwise pass through fast
+      if (!/^https:\/\/chatgpt\.com\/(backend-api|backend-anon)\/(?:f\/)?conversation(?:\/[a-z_]+)?/i.test(u)) {
+        return orig(url, data);
+      }
 
-  wrapped.__ppfWrapped = true;
-  navigator.sendBeacon = wrapped;
-})();
+      let bodyKind = "none", bodyText = null;
+      if (typeof data === "string") { bodyText = data; bodyKind = looksJson(data) ? "json" : "text"; }
+      else if (data instanceof Blob) bodyKind = "binary";
+      else if (data instanceof FormData) bodyKind = "multipart";
+
+      // We don't consult proxy for beacon path unless you want to.
+      return orig(url, data);
+    }
+
+    wrapped.__ppfWrapped = true;
+    navigator.sendBeacon = wrapped;
+  })();
 })();
