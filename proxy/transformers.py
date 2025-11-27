@@ -1,16 +1,7 @@
 import json
-from typing import List
+from typing import List, Tuple, Callable
 
-from .detectors import (
-    EMAIL_RE,
-    PHONE_RE,
-    IPV4_RE,
-    IPV6_RE,
-    JWT_RE,
-    API_KEY_RE,
-    NATIONAL_ID_RE,
-    COMPANY_RE,
-)
+from detectors import detect_all, Detection
 
 # ========== HELPER FUNCTIONS ==========
 
@@ -76,13 +67,92 @@ def mask_national_id(nid: str) -> str:
     """
     return mask_keep_last_n(nid, 4)
 
-def redact_text(text: str, detections_out: list[str]) -> str:
-    """Redact email, record detection tags into detections_out."""
-    changed = text
-    if EMAIL_RE.search(changed):
-        detections_out.append("email")
-        changed = EMAIL_RE.sub("{{EMAIL}}", changed)
-    return changed
+
+def mask_company(_: str) -> str:
+    """Company names: replace with generic placeholder."""
+    return "{{COMPANY}}"
+
+
+def _add_tag_once(tags: List[str], tag: str) -> None:
+    """Append tag only if not already present."""
+    if tag not in tags:
+        tags.append(tag)
+
+
+def _mask_value(det: Detection) -> str:
+    """
+    Given a single Detection, return its masked replacement string.
+    """
+    t = det["type"]
+    v = det["value"]
+
+    if t == "email":
+        return mask_email(v)
+    if t == "phone":
+        return mask_phone(v)
+    if t == "ipv4":
+        return mask_ipv4(v)
+    if t == "ipv6":
+        return mask_ipv6(v)
+    if t == "jwt":
+        return mask_jwt(v)
+    if t == "api_key":
+        return mask_api_key(v)
+    if t == "national_id":
+        return mask_national_id(v)
+    if t == "company":
+        return mask_company(v)
+
+    # Fallback: if some unknown type sneaks in, just return original
+    return v
+
+
+# ========= LOW-LEVEL STRING TRANSFORM (USES detect_all) =========
+
+def redact_text(text: str, tags_out: List[str]) -> str:
+    """
+    Redact all supported PII types in a plain text string, using detect_all.
+
+    - Uses detect_all(text) to get a list[Detection].
+    - Builds a new redacted string based on those detections.
+    - Populates tags_out with a list[str] of unique detection types.
+    """
+
+    detections = detect_all(text)  # List[Detection]
+
+    if not detections:
+        return text
+
+    # Add detection types to tags_out
+    for det in detections:
+        _add_tag_once(tags_out, det["type"])
+
+    # Sort detections by start index so we can rebuild the string
+    detections_sorted = sorted(detections, key=lambda d: d["start"])
+
+    parts: List[str] = []
+    cursor = 0
+
+    for det in detections_sorted:
+        start = det["start"]
+        end = det["end"]
+
+        # If overlapping or out of order, skip this detection
+        if start < cursor:
+            continue
+
+        # Add text before detection
+        parts.append(text[cursor:start])
+        # Add masked value
+        parts.append(_mask_value(det))
+
+        cursor = end
+
+    # Add any remaining text after the last detection
+    parts.append(text[cursor:])
+
+    return "".join(parts)
+
 
 def json_transform(body_str: str, transform) -> tuple[str|None, list[str]]:
     """
