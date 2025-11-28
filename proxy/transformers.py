@@ -1,9 +1,23 @@
 import json
-from typing import List, Tuple, Callable
-
-from detectors import detect_all, Detection
+import re
+from typing import List, Tuple, Callable, Optional
+from .detectors import detect_all, Detection
 
 # ========== HELPER FUNCTIONS ==========
+# Long base64-like blob and data:URL detectors
+_BASE64_BLOB = re.compile(r"^[A-Za-z0-9+/=\s]{128,}$")
+_DATA_URL_B64 = re.compile(r"^data:[^;]+;base64,[A-Za-z0-9+/=\s]+$", re.I)
+_URLISH       = re.compile(r"^(?:https?|blob|file):", re.I)
+_TOKENISH     = re.compile(r"^[A-Za-z0-9_-]{16,}$")  # file_id / asset_pointer / upload tokens, etc.
+
+def looks_binary_like(s: str) -> bool:
+    if _DATA_URL_B64.match(s): return True
+    if _URLISH.match(s):      return True
+    if _BASE64_BLOB.match(s): return True
+    if _TOKENISH.match(s):    return True
+    return False
+
+
 
 def mask_keep_last_n(value: str, n: int) -> str:
     """
@@ -154,22 +168,32 @@ def redact_text(text: str, tags_out: List[str]) -> str:
     return "".join(parts)
 
 
-def json_transform(body_str: str, transform) -> tuple[str|None, list[str]]:
+def json_transform(
+    body_str: str,
+    transform: Callable[[str, List[str]], str],
+    *,
+    skip: Optional[Callable[[str], bool]] = None
+) -> tuple[str|None, list[str]]:
     """
     Walk strings in a JSON body and apply `transform` (e.g., redact_text).
     Returns (new_body_or_none, detections).
     If `body_str` is not JSON, treat it as plain text.
+    You can pass `skip(s: str) -> bool` to preserve binary-like strings.
     """
     detections: list[str] = []
     try:
         obj = json.loads(body_str)
     except Exception:
         # Not JSON, treat it as text
+        if skip and skip(body_str):
+            return None, detections
         new = transform(body_str, detections)
         return (new if new != body_str else None), detections
 
     def walk(x):
         if isinstance(x, str):
+            if skip and skip(x):
+                return x
             return transform(x, detections)
         if isinstance(x, list):
             return [walk(v) for v in x]
@@ -181,3 +205,4 @@ def json_transform(body_str: str, transform) -> tuple[str|None, list[str]]:
     if obj2 == obj:
         return None, detections
     return json.dumps(obj2, ensure_ascii=False, separators=(",", ":")), detections
+
