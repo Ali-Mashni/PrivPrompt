@@ -18,6 +18,7 @@ async def healthz():
 
 @app.post("/inspect")
 async def inspect(request: Request):
+    start_time = now()
     payload = await request.json()
     url   = payload.get("url","")
     ctx   = payload.get("context","fetch")
@@ -25,7 +26,29 @@ async def inspect(request: Request):
     body  = payload.get("body")
     kind  = payload.get("bodyKind","none")
 
+    # Extract detected types before calling decide()
+    detected = []
+    if isinstance(body, str) and kind not in ("binary", "multipart", "unknown"):
+        from .transformers import json_transform, redact_text
+        _, detected = json_transform(body, redact_text)
+
     decision = decide(mode, kind, url, body)
+    
+    # Calculate duration
+    duration_ms = (now() - start_time) * 1000
+    
+    # Extract route from URL
+    route = ""
+    if url:
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            route = parsed.path.split("?")[0]
+        except:
+            route = url.split("?")[0] if "?" in url else url
+    
+    # Determine status code
+    status = 200 if decision.get("action") != "block" else 403
 
     # --- reduce noise: skip logging heartbeats/prepare ---
     noisy = (
@@ -34,7 +57,12 @@ async def inspect(request: Request):
     )
     if not noisy:
         log_event({
-            "ts": now(),
+            "ts": start_time,
+            "route": route,
+            "duration_ms": round(duration_ms, 2),
+            "status": status,
+            "detected": detected,
+            # Keep original fields for debugging
             "context": ctx,
             "url": url,
             "body_kind": kind,

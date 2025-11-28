@@ -10,7 +10,7 @@ def decide(mode: str, kind: str, url: str, body: str|None) -> Decision:
     """
     Centralized policy:
       - non-text: block in 'strict' and 'block'; allow-with-toast in 'warn'
-      - text/json: redact email in 'warn' & 'strict'; block only when a violation exists in 'block'
+      - text/json: redact all PII types in 'warn' & 'strict'; block only when a violation exists in 'block'
     """
     # Non-text uploads
     if kind in ("binary", "multipart", "unknown"):

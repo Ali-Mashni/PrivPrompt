@@ -1,8 +1,7 @@
 import json
 from typing import List, Tuple, Callable
 
-from detectors import detect_all, Detection
-
+from .detectors import detect_all, Detection
 # ========== HELPER FUNCTIONS ==========
 
 def mask_keep_last_n(value: str, n: int) -> str:
