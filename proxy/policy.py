@@ -21,7 +21,8 @@ from typing import TypedDict, Optional, Any
 # ---------- Constants ---------------------------------------------------------
 
 #For warn mode
-NON_TEXT_TOAST = "PrivPrompt: allowed non-text upload"
+NON_TEXT_ALLOW_TOAST = "PrivPrompt: allowed non-text upload"
+NON_TEXT_BLOCK_TOAST = "PrivPrompt: blocked non-text upload"
 
 # Common binary extensions
 _BINARY_EXTS = (
@@ -57,6 +58,25 @@ _BASE64_SNIFFERS = (
     ("image/webp", re.compile(r"UklGR")),              # RIFF/WEBP (weak)
     ("application/pdf", re.compile(r"JVBERi0x")),      # %PDF-
 )
+
+# --- make transformers available everywhere (correct signatures) ---
+try:
+    from .transformers import json_transform, redact_text  # redact_text(text, detections_out) -> str
+except Exception:
+    def redact_text(text: str, detections_out: list[str]) -> str:
+        # no-op fallback
+        return text
+    def json_transform(body_str: str, transform):
+        # minimal no-op fallback matching your real json_transform contract
+        detections: list[str] = []
+        # treat non-JSON as plain text (like your real helper)
+        try:
+            json.loads(body_str)
+        except Exception:
+            new = transform(body_str, detections)
+            return (new if new != body_str else None), detections
+        # JSON path: pretend unchanged, no detections
+        return None, detections
 
 # ---------- Types -------------------------------------------------------------
 
@@ -226,8 +246,8 @@ def decide(
     Centralized policy:
 
       Non-text (or JSON that declares/embeds non-text):
-        - 'strict' & 'block'  -> {"action":"block","notify":{"message": NON_TEXT_TOAST}}
-        - 'warn'              -> {"action":"allow","notify":{"message": NON_TEXT_TOAST}}
+        - 'strict' & 'block'  -> {"action":"block","notify":{"message": NON_TEXT_BLOCK_TOAST}}
+        - 'warn'              -> {"action":"allow","notify":{"message": NON_TEXT_ALLOW_TOAST}}
 
       Plain text/JSON (no binary):
         - Use json_transform + redact_text.
@@ -239,14 +259,14 @@ def decide(
     # 1) Obvious non-text by MIME/ext/bytes
     if _looks_non_text(content_type, filename, body):
         if mode in ("strict", "block"):
-            return {"action": "block", "notify": {"message": NON_TEXT_TOAST}}
-        return {"action": "allow", "notify": {"message": NON_TEXT_TOAST}}
+            return {"action": "block", "notify": {"message": NON_TEXT_BLOCK_TOAST}}
+        return {"action": "allow", "notify": {"message": NON_TEXT_ALLOW_TOAST}}
 
     # 2) From here, treat non-str as suspect fallback
     if not isinstance(body, str):
         if mode in ("strict", "block"):
-            return {"action": "block", "notify": {"message": NON_TEXT_TOAST}}
-        return {"action": "allow", "notify": {"message": NON_TEXT_TOAST}}
+            return {"action": "block", "notify": {"message": NON_TEXT_BLOCK_TOAST}}
+        return {"action": "allow", "notify": {"message": NON_TEXT_ALLOW_TOAST}}
 
     # 3) JSON that *declares/embeds* binary even without base64 bytes in this request
     is_json = False
@@ -259,17 +279,17 @@ def decide(
 
     if is_json and _json_declares_or_embeds_binary(parsed):
         if mode in ("strict", "block"):
-            return {"action": "block", "notify": {"message": NON_TEXT_TOAST}}
-        return {"action": "allow", "notify": {"message": NON_TEXT_TOAST}}
-
-    # 4) Plain text / safe JSON path: reuse your transformers
-    try:
-        from .transformers import json_transform, redact_text  # your implementations
-    except Exception:
-        # Safe fallbacks if your module isn't importable (no-ops)
-        def redact_text(x: str) -> str: return x
-        def json_transform(x: str, _redactor) -> tuple[str, list]:
-            return x, []
+            return {"action": "block", "notify": {"message": NON_TEXT_BLOCK_TOAST}}
+        # warn: allow non-text, but still sanitize textual fields
+        new_body, detections = json_transform(body, redact_text)
+        if new_body is not None and new_body != body:
+            return {
+                "action": "modify",
+                "body": new_body,
+                "notify": {"message": NON_TEXT_ALLOW_TOAST},  # keep the same toast
+            }
+        return {"action": "allow", "notify": {"message": NON_TEXT_ALLOW_TOAST}}
+    
 
     if is_json:
         new_body, detections = json_transform(body, redact_text)
@@ -280,10 +300,12 @@ def decide(
             return {"action": "modify", "body": new_body, "notify": {"message": "PrivPrompt: redacted sensitive text"}}
         return {"action": "allow"}
 
-    # Plain text (not JSON)
-    new_text = redact_text(body)
-    if mode == "block" and new_text != body:
+    # Plain text (not JSON) – run through the same transformer
+    new_body, detections = json_transform(body, redact_text)
+    has_violation = bool(detections)
+    if mode == "block" and has_violation:
         return {"action": "block", "notify": {"message": "PrivPrompt: blocked (privacy violation)"}}
-    if new_text != body:
-        return {"action": "modify", "body": new_text, "notify": {"message": "PrivPrompt: redacted sensitive text"}}
+    if new_body is not None and new_body != body:
+        return {"action": "modify", "body": new_body, "notify": {"message": "PrivPrompt: redacted sensitive text"}}
     return {"action": "allow"}
+
