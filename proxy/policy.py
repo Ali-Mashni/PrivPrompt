@@ -122,7 +122,7 @@ def _mime_is_binary(s: str) -> bool:
     s = s.lower()
     return (
         s.startswith(("image/", "audio/", "video/"))
-        or s in ("application/pdf",)
+        or s in ("application/pdf", "application/octet-stream")
     )
 
 def _looks_non_text(content_type: Optional[str], filename: Optional[str], body: Optional[str|bytes]) -> bool:
