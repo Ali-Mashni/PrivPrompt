@@ -131,12 +131,9 @@ def _looks_non_text(content_type: Optional[str], filename: Optional[str], body: 
         return True
 
     ct = (content_type or "").lower()
-    if ct.startswith(("image/","audio/","video/")):
+    if _mime_is_binary(ct) or "multipart/form-data" in ct:
         return True
-    if ct in {"application/pdf"}:
-        return True
-    if "multipart/form-data" in ct:
-        return True
+
 
     fn = (filename or "").lower()
     if fn.endswith(_BINARY_EXTS):
