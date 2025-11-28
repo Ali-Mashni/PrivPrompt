@@ -2,17 +2,29 @@
 
 // Ensure a default mode exists on first install
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.get({ ppf_mode: null }, ({ ppf_mode }) => {
-    if (!ppf_mode) chrome.storage.local.set({ ppf_mode: "warn" });
+  chrome.storage.local.get({ ppf_mode: "warn" }).then(({ ppf_mode }) => {
+    if (!ppf_mode) {
+      chrome.storage.local.set({ ppf_mode: "warn" });
+    }
+  }).catch(err => {
+    console.error("[PPF] onInstalled storage init failed:", err);
   });
 });
 
+
 // Relay inspection to local proxy; include current mode
 async function ppfInspect(payload) {
-  // read mode fresh so popup changes take effect immediately
-  const { ppf_mode } = await chrome.storage.local.get({ ppf_mode: "warn" });
+  let ppf_mode = "warn";
 
-  // Add a short timeout so messages don't hang if proxy is down
+  // Read mode from storage, but don't crash if it fails
+  try {
+    const res = await chrome.storage.local.get({ ppf_mode: "warn" });
+    ppf_mode = res.ppf_mode || "warn";
+  } catch (e) {
+    console.error("[PPF] storage.get failed, using default mode 'warn':", e);
+  }
+
+  // Short timeout so we don't hang if the proxy is down
   const ctrl = new AbortController();
   const to = setTimeout(() => ctrl.abort(), 1500);
 
@@ -23,23 +35,39 @@ async function ppfInspect(payload) {
       body: JSON.stringify({ ...payload, mode: ppf_mode }),
       signal: ctrl.signal
     });
+
     clearTimeout(to);
     return await res.json();
   } catch (e) {
     clearTimeout(to);
+    console.warn("[PPF] proxy fetch failed, allowing request:", e);
     // fail-open
     return { action: "allow" };
   }
 }
 
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type === "PPF_INSPECT") {
-    const enriched = { ...msg.payload, tabId: sender?.tab?.id ?? null }
-    ppfInspect(enriched).then(sendResponse);
+    (async () => {
+      try {
+        const enriched = { ...msg.payload, tabId: sender?.tab?.id ?? null };
+        const decision = await ppfInspect(enriched);
+        sendResponse(decision || { action: "allow" });
+      } catch (err) {
+        console.error("[PPF] ppfInspect handler crashed, allowing:", err);
+        sendResponse({ action: "allow" });
+      }
+    })();
     return true; // async
   }
+
   if (msg?.type === "PPF_SET_MODE") {
-    // popup writes to storage; we just ACK
-    sendResponse({ ok: true });
+    try {
+      sendResponse({ ok: true });
+    } catch (err) {
+      console.error("[PPF] failed to ACK PPF_SET_MODE:", err);
+    }
   }
 });
+
