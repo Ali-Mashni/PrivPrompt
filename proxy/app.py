@@ -18,14 +18,38 @@ async def healthz():
 
 @app.post("/inspect")
 async def inspect(request: Request):
+    start_ts = now()
     payload = await request.json()
-    url   = payload.get("url","")
-    ctx   = payload.get("context","fetch")
+
+    url   = payload.get("url", "")
+    ctx   = payload.get("context", "fetch")
     mode  = (payload.get("mode") or "warn").lower()
     body  = payload.get("body")
-    kind  = payload.get("bodyKind","none")
+    kind  = payload.get("bodyKind", "none")
 
-    decision = decide(mode, kind, url, body)
+    # NEW: hand MIME/filename to policy so it can classify non-text correctly
+    content_type = payload.get("contentType")
+    filename     = payload.get("filename")
+
+    # ask policy only (keep app clean)
+    decision = decide(
+        mode, kind, url, body,
+        content_type=content_type,
+        filename=filename
+    )
+
+    # compute a status for dashboards
+    status = 200 if decision.get("action") != "block" else 403
+    detected = decision.get("detected", []) 
+
+    # optional: nicer route field for logs
+    route = ""
+    if url:
+        try:
+            from urllib.parse import urlparse
+            route = urlparse(url).path.split("?")[0]
+        except Exception:
+            route = url.split("?")[0] if "?" in url else url
 
     # --- reduce noise: skip logging heartbeats/prepare ---
     noisy = (
@@ -34,17 +58,26 @@ async def inspect(request: Request):
     )
     if not noisy:
         log_event({
-            "ts": now(),
+            "ts": start_ts,
+            "route": route,
+            "duration_ms": round((now() - start_ts) * 1000, 2),
+            "status": status,
+            "detected": detected,
+            
             "context": ctx,
             "url": url,
             "body_kind": kind,
-            "action": decision.get("action","allow"),
+            "content_type": content_type,
+            "filename": filename,
+
+            "action": decision.get("action", "allow"),
             "mode": mode,
             "send_id": payload.get("sendId"),
-            "tab_id": payload.get("tabId")  
+            "tab_id": payload.get("tabId"),
         })
 
-    return JSONResponse(decision)
+    return JSONResponse(decision, status_code=status)
+
 
 
 # ---- Optional relay (not used by ChatGPT main-world patch; keep for later) ----

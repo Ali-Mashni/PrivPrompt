@@ -87,6 +87,7 @@ class Decision(TypedDict, total=False):
     action: str            # "allow" | "modify" | "block"
     body: str              # for modified text/json
     notify: dict           # {"message": str}
+    detected: list[str]    # e.g., ["email","phone"] (unique tags)
 
 # ---------- Utilities ---------------------------------------------------------
 
@@ -259,14 +260,14 @@ def decide(
     # 1) Obvious non-text by MIME/ext/bytes
     if _looks_non_text(content_type, filename, body):
         if mode in ("strict", "block"):
-            return {"action": "block", "notify": {"message": NON_TEXT_BLOCK_TOAST}}
-        return {"action": "allow", "notify": {"message": NON_TEXT_ALLOW_TOAST}}
+            return {"action": "block", "notify": {"message": NON_TEXT_BLOCK_TOAST}, "detected": []}
+        return {"action": "allow", "notify": {"message": NON_TEXT_ALLOW_TOAST}, "detected": []}
 
     # 2) From here, treat non-str as suspect fallback
     if not isinstance(body, str):
         if mode in ("strict", "block"):
-            return {"action": "block", "notify": {"message": NON_TEXT_BLOCK_TOAST}}
-        return {"action": "allow", "notify": {"message": NON_TEXT_ALLOW_TOAST}}
+            return {"action": "block", "notify": {"message": NON_TEXT_BLOCK_TOAST}, "detected": []}
+        return {"action": "allow", "notify": {"message": NON_TEXT_ALLOW_TOAST}, "detected": []}
 
     # 3) JSON that *declares/embeds* binary even without base64 bytes in this request
     is_json = False
@@ -279,32 +280,57 @@ def decide(
 
     if is_json and _json_declares_or_embeds_binary(parsed):
         if mode in ("strict", "block"):
-            return {"action": "block", "notify": {"message": NON_TEXT_BLOCK_TOAST}}
+            return {"action": "block", "notify": {"message": NON_TEXT_BLOCK_TOAST}, "detected": []}
         # warn: allow non-text, but still sanitize textual fields
         new_body, detections = json_transform(body, redact_text, skip=looks_binary_like)
         if new_body is not None and new_body != body:
             return {
                 "action": "modify",
                 "body": new_body,
-                "notify": {"message": NON_TEXT_ALLOW_TOAST},  # keep the same toast
+                "notify": {"message": NON_TEXT_ALLOW_TOAST},
+                "detected": detections,
             }
-        return {"action": "allow", "notify": {"message": NON_TEXT_ALLOW_TOAST}}
+        return {
+            "action": "allow",
+            "notify": {"message": NON_TEXT_ALLOW_TOAST},
+            "detected": detections,
+        }
+
     
 
     if is_json:
         new_body, detections = json_transform(body, redact_text, skip=looks_binary_like)
         has_violation = bool(detections)
         if mode == "block" and has_violation:
-            return {"action": "block", "notify": {"message": "PrivPrompt: blocked (privacy violation)"}}
+            return {
+                "action": "block",
+                "notify": {"message": "PrivPrompt: blocked (privacy violation)"},
+                "detected": detections,
+            }
         if new_body is not None and new_body != body:
-            return {"action": "modify", "body": new_body, "notify": {"message": "PrivPrompt: redacted sensitive text"}}
-        return {"action": "allow"}
+            return {
+                "action": "modify",
+                "body": new_body,
+                "notify": {"message": "PrivPrompt: redacted sensitive text"},
+                "detected": detections,
+            }
+        return {"action": "allow", "detected": detections}
+
 
     # Plain text (not JSON) – run through the same transformer
     new_body, detections = json_transform(body, redact_text, skip=looks_binary_like)
     has_violation = bool(detections)
     if mode == "block" and has_violation:
-        return {"action": "block", "notify": {"message": "PrivPrompt: blocked (privacy violation)"}}
+        return {
+            "action": "block",
+            "notify": {"message": "PrivPrompt: blocked (privacy violation)"},
+            "detected": detections,
+        }
     if new_body is not None and new_body != body:
-        return {"action": "modify", "body": new_body, "notify": {"message": "PrivPrompt: redacted sensitive text"}}
-    return {"action": "allow"}
+        return {
+            "action": "modify",
+            "body": new_body,
+            "notify": {"message": "PrivPrompt: redacted sensitive text"},
+            "detected": detections,
+        }
+    return {"action": "allow", "detected": detections}
