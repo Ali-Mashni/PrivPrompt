@@ -10,6 +10,27 @@ _DATA_URL_B64 = re.compile(r"^data:[^;]+;base64,[A-Za-z0-9+/=\s]+$", re.I)
 _URLISH       = re.compile(r"^(?:https?|blob|file):", re.I)
 _TOKENISH     = re.compile(r"^[A-Za-z0-9_-]{16,}$")  # file_id / asset_pointer / upload tokens, etc.
 
+# Canonicalize keys to compare underscored/camelCase/whatever uniformly
+def _norm_key(k: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", k.lower())
+
+_DENY_KEYS_RAW = {
+    "id","message_id","conversation_id","parent_id","recipient","name","role","type",
+    "url","src","href",
+    "file_id","file_ids","upload_id","asset_pointer","file_token","token",
+    "image_url","mime","mime_type","content_type",
+    "filename","file_name",
+}
+_ALLOW_KEYS_RAW = {
+    "text","message","content","user_input","query","prompt","title","body",
+    "caption","alt","aria_label","description","summary","note","notes"
+}
+
+# Compare against normalized forms (so imageUrl, image_url, IMAGE-URL all match)
+_DENY_KEYS  = {_norm_key(k) for k in _DENY_KEYS_RAW}
+_ALLOW_KEYS = {_norm_key(k) for k in _ALLOW_KEYS_RAW}
+
+
 def looks_binary_like(s: str) -> bool:
     if _DATA_URL_B64.match(s): return True
     if _URLISH.match(s):      return True
@@ -184,25 +205,41 @@ def json_transform(
     try:
         obj = json.loads(body_str)
     except Exception:
-        # Not JSON, treat it as text
+        # Not JSON, treat it as text (still avoid binary-like whole-body strings)
         if skip and skip(body_str):
             return None, detections
         new = transform(body_str, detections)
         return (new if new != body_str else None), detections
 
-    def walk(x):
+    def walk(x, key: Optional[str] = None, path: tuple = ()):
+        # Strings
         if isinstance(x, str):
-            if skip and skip(x):
+            kn = _norm_key(key) if isinstance(key, str) else None
+            if (kn in _DENY_KEYS) or (skip and skip(x)):
+                return x
+            if kn is not None and kn not in _ALLOW_KEYS:
                 return x
             return transform(x, detections)
+
+
+
+        # Lists
         if isinstance(x, list):
-            return [walk(v) for v in x]
+            return [walk(v, None, path + (i,)) for i, v in enumerate(x)]
+
+        # Dicts
         if isinstance(x, dict):
-            return {k: walk(v) for k, v in x.items()}
+            out = {}
+            for k, v in x.items():
+                out[k] = walk(v, k, path + (k,))
+            return out
+
+        # Other types
         return x
 
     obj2 = walk(obj)
     if obj2 == obj:
         return None, detections
+
     return json.dumps(obj2, ensure_ascii=False, separators=(",", ":")), detections
 
