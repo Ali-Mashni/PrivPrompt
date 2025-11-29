@@ -61,22 +61,25 @@ _BASE64_SNIFFERS = (
 
 # --- make transformers available everywhere (correct signatures) ---
 try:
-    from .transformers import json_transform, redact_text  # redact_text(text, detections_out) -> str
+    from .transformers import json_transform, redact_text, looks_binary_like
 except Exception:
-    def redact_text(text: str, detections_out: list[str]) -> str:
-        # no-op fallback
+    def redact_text(text: str, detections_out: list[str] | None = None) -> str:
         return text
-    def json_transform(body_str: str, transform):
-        # minimal no-op fallback matching your real json_transform contract
+
+    def json_transform(body_str: str, transform, *, skip=None):
         detections: list[str] = []
-        # treat non-JSON as plain text (like your real helper)
+        # honor skip predicate (e.g., base64/data: URL)
+        if skip and isinstance(body_str, str) and skip(body_str):
+            return None, detections
         try:
-            json.loads(body_str)
+            json.loads(body_str)  # JSON → unchanged in fallback
         except Exception:
             new = transform(body_str, detections)
             return (new if new != body_str else None), detections
-        # JSON path: pretend unchanged, no detections
         return None, detections
+
+    def looks_binary_like(_s: str) -> bool:
+        return False
 
 # ---------- Types -------------------------------------------------------------
 
@@ -278,7 +281,7 @@ def decide(
         if mode in ("strict", "block"):
             return {"action": "block", "notify": {"message": NON_TEXT_BLOCK_TOAST}}
         # warn: allow non-text, but still sanitize textual fields
-        new_body, detections = json_transform(body, redact_text)
+        new_body, detections = json_transform(body, redact_text, skip=looks_binary_like)
         if new_body is not None and new_body != body:
             return {
                 "action": "modify",
@@ -289,7 +292,7 @@ def decide(
     
 
     if is_json:
-        new_body, detections = json_transform(body, redact_text)
+        new_body, detections = json_transform(body, redact_text, skip=looks_binary_like)
         has_violation = bool(detections)
         if mode == "block" and has_violation:
             return {"action": "block", "notify": {"message": "PrivPrompt: blocked (privacy violation)"}}
@@ -298,11 +301,10 @@ def decide(
         return {"action": "allow"}
 
     # Plain text (not JSON) – run through the same transformer
-    new_body, detections = json_transform(body, redact_text)
+    new_body, detections = json_transform(body, redact_text, skip=looks_binary_like)
     has_violation = bool(detections)
     if mode == "block" and has_violation:
         return {"action": "block", "notify": {"message": "PrivPrompt: blocked (privacy violation)"}}
     if new_body is not None and new_body != body:
         return {"action": "modify", "body": new_body, "notify": {"message": "PrivPrompt: redacted sensitive text"}}
     return {"action": "allow"}
-
