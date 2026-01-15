@@ -8,13 +8,46 @@ A local privacy firewall for AI usage in the browser.
 
 MVP scope: text JSON prompts only. File and image uploads are blocked by default.
 
+---
+
+## Screenshots (Running Product)
+
+### Extension Toggle (Popup)
+![Extension Popup](docs/images/extension-popup.png)
+
+### Dashboard (Metrics + Detections)
+![Dashboard](docs/images/dashboard.png)
+
+---
+## Redaction Demo (Before / After / Blocked)
+
+### Before (Raw prompt contains sensitive data)
+![Before](docs/images/before.png)
+
+### After (Detected + redacted)
+![After](docs/images/after.png)
+
+### Blocked (Request denied by policy)
+![Blocked](docs/images/blocked.png)
+
+---
+## Architecture
+
+![Architecture Overview](docs/images/architecture.png)
+
+**Data path**
+1) Browser extension intercepts AI requests  
+2) Requests are redirected to the local FastAPI proxy  
+3) Proxy applies policy (detect/redact/block) and forwards upstream  
+4) Proxy logs events to JSONL  
+5) Streamlit dashboard reads JSONL and shows metrics
+
+---
+
 ## Requirements
 
-Python 3.12.x (team standard)
-
-Git
-
-Chromium-based browser with Developer Mode enabled (Chrome, Edge, Brave, Atlas, etc.)
+- Python 3.12.x (team standard)
+- Chromium-based browser with Developer Mode enabled (Chrome, Edge, Brave, Atlas, etc.)
 
 Verify Python version:
 
@@ -48,6 +81,7 @@ privprompt/
   docs/
   .gitignore
   .env                    # Created in setup
+  requirements.txt
 ```
 ## Set Up Python (3.12) and Install Dependencies
 
